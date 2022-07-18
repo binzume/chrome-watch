@@ -1,4 +1,4 @@
 logs/
 *.log
 *.exe
-settings.yaml
+/settings.yaml

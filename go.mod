@@ -1,4 +1,4 @@
-module chrome-watch
+module github.com/binzume/chrome-watch
 
 go 1.18
 
