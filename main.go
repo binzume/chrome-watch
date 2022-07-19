@@ -13,26 +13,17 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/gobwas/ws"
-	"gopkg.in/yaml.v3"
 
 	"github.com/chromedp/cdproto/inspector"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
 
-type Settings struct {
-	Scripts []*struct {
-		Prefix     string
-		ScriptPath string
-	}
-}
-
-var settings Settings
+var userScripts []*UserScript
 
 type Tab struct {
 	ID                   string `json:"id"`
@@ -69,9 +60,7 @@ func WrapScript(script string) string {
 	return SCRIPT_PREFIX + script + SCRIPT_SUFFIX
 }
 
-func Install(ctx context.Context, target target.ID, scriptPath string, currentTarget bool) error {
-	script, _ := ioutil.ReadFile(scriptPath)
-
+func Install(ctx context.Context, target target.ID, script *UserScript, currentTarget bool) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Second*10)
 	defer cancel()
 
@@ -87,15 +76,17 @@ func Install(ctx context.Context, target target.ID, scriptPath string, currentTa
 		}()
 	}
 
-	err := chromedp.Run(ctx,
-		chromedp.Evaluate(WrapScript(string(script)), nil),
-	)
+	scriptStr, err := script.Read()
+	if err == nil {
+		err = chromedp.Run(ctx,
+			chromedp.Evaluate(WrapScript(string(scriptStr)), nil),
+		)
+	}
 	if err != nil {
 		log.Println("error: ", err)
 	} else {
 		log.Println("ok.")
 	}
-
 	return err
 }
 
@@ -103,10 +94,10 @@ func CheckTarget(ctx context.Context, t *target.Info, currentTarget bool) bool {
 	if t.Type != "page" {
 		return false
 	}
-	for _, s := range settings.Scripts {
-		if strings.HasPrefix(t.URL, s.Prefix) {
-			log.Println("install", s.ScriptPath, t.URL)
-			go Install(ctx, t.TargetID, s.ScriptPath, currentTarget)
+	for _, s := range userScripts {
+		if s.Match(t.URL) {
+			log.Println("install", s.Name, t.URL)
+			go Install(ctx, t.TargetID, s, currentTarget)
 			return true
 		}
 	}
@@ -114,7 +105,6 @@ func CheckTarget(ctx context.Context, t *target.Info, currentTarget bool) bool {
 }
 
 func Watch(parentCtx context.Context, tid target.ID) error {
-	log.Println("attach", tid)
 	var cc *chromedp.Context
 	ctx, cancel := chromedp.NewContext(parentCtx, chromedp.WithTargetID(tid), func(c *chromedp.Context) { cc = c })
 	defer cancel()
@@ -156,7 +146,6 @@ func Watch(parentCtx context.Context, tid target.ID) error {
 		detached.Do(func() { close(done) })
 	}
 	<-done
-	log.Println("detached")
 	return err
 }
 
@@ -175,7 +164,9 @@ func WatchLoop(wsUrl string) error {
 
 		for _, t := range targets {
 			if !t.Attached && t.Type == "page" {
+				log.Println("attach", t.TargetID, t.URL)
 				err = Watch(ctxt, t.TargetID)
+				log.Println("detached", err)
 				break
 			}
 		}
@@ -185,8 +176,6 @@ func WatchLoop(wsUrl string) error {
 		time.Sleep(5 * time.Second)
 	}
 }
-
-var chromeDomainSocket = "localabstract:chrome_devtools_remote"
 
 type streamWrapper struct {
 	*Stream
@@ -209,20 +198,15 @@ func (*streamWrapper) SetWriteDeadline(time.Time) error {
 }
 
 func main() {
+	const chromeDomainSocket = "localabstract:chrome_devtools_remote"
+
 	wsUrl := flag.String("ws", "ws://localhost:9222/devtools/browser", "DevTools Socket URL")
 	adb := flag.String("adb", "", "Connect via adb (host:port)")
 	adbKey := flag.String("adbkey", "", "RSA Private key file for ADB (e.g. ~/.android/adbkey ) ")
-	settingsPath := flag.String("settings", "settings.yaml", "Settings file")
+	scriptsPath := flag.String("scripts", "./scripts", "User script dir")
 	flag.Parse()
 
-	b, err := ioutil.ReadFile(*settingsPath)
-	if err != nil {
-		log.Fatal(err)
-	}
-	err = yaml.Unmarshal(b, &settings)
-	if err != nil {
-		log.Fatal(err)
-	}
+	userScripts = ScanUserScript(*scriptsPath)
 
 	if *adb != "" {
 		var key *rsa.PrivateKey
@@ -250,13 +234,13 @@ func main() {
 			log.Fatal(err)
 		}
 		defer adb.Close()
-		ws.DefaultDialer.NetDial = func(ctx context.Context, network, host string) (net.Conn, error) {
+		ws.DefaultDialer.NetDial = func(_ context.Context, _, _ string) (net.Conn, error) {
 			stream, err := adb.Open(chromeDomainSocket)
 			return &streamWrapper{stream}, err
 		}
 	}
 
-	err = WatchLoop(*wsUrl)
+	err := WatchLoop(*wsUrl)
 	if err != nil {
 		log.Println(err)
 	}

@@ -1,5 +1,0 @@
-scripts:
-  - prefix: https://www.binzume.net/
-    scriptpath: binzume.net.js
-  - prefix: https://labs.binzume.net/
-    scriptpath: binzume.net.js

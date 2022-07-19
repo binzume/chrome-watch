@@ -110,13 +110,14 @@ func Connect(rw io.ReadWriter, key *rsa.PrivateKey) (*Conn, error) {
 	if p.Command == A_AUTH {
 		if key == nil {
 			key, _ = rsa.GenerateKey(rand.Reader, 2048) // generate temporary key.
+		} else {
+			sign, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA1, p.Data)
+			if err != nil {
+				return nil, err
+			}
+			NewPacket(A_AUTH, 2, 0, sign).WriteTo(c.c)
+			p, _ = c.readPacket()
 		}
-		sign, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA1, p.Data)
-		if err != nil {
-			return nil, err
-		}
-		NewPacket(A_AUTH, 2, 0, sign).WriteTo(c.c)
-		p, _ = c.readPacket()
 		if p.Command == A_AUTH {
 			pkey, _ := ssh.NewPublicKey(&key.PublicKey)
 			pubKey := ssh.MarshalAuthorizedKey(pkey)
