@@ -62,6 +62,13 @@ func GetTabs(jsonUrl string) ([]*Tab, error) {
 	return tabs, nil
 }
 
+const SCRIPT_PREFIX = `if (!globalThis._chromewatchScriptExecuted) {globalThis._chromewatchScriptExecuted = true; (async ()=>{`
+const SCRIPT_SUFFIX = `})();}`
+
+func WrapScript(script string) string {
+	return SCRIPT_PREFIX + script + SCRIPT_SUFFIX
+}
+
 func Install(ctx context.Context, target target.ID, scriptPath string, currentTarget bool) error {
 	script, _ := ioutil.ReadFile(scriptPath)
 
@@ -80,13 +87,14 @@ func Install(ctx context.Context, target target.ID, scriptPath string, currentTa
 		}()
 	}
 
-	var err error
-	var res []byte
-
-	err = chromedp.Run(ctx,
-		chromedp.Evaluate(string(script), &res),
+	err := chromedp.Run(ctx,
+		chromedp.Evaluate(WrapScript(string(script)), nil),
 	)
-	log.Println("result: ", string(res), err)
+	if err != nil {
+		log.Println("error: ", err)
+	} else {
+		log.Println("ok.")
+	}
 
 	return err
 }
@@ -203,10 +211,11 @@ func (*streamWrapper) SetWriteDeadline(time.Time) error {
 func main() {
 	wsUrl := flag.String("ws", "ws://localhost:9222/devtools/browser", "DevTools Socket URL")
 	adb := flag.String("adb", "", "Connect via adb (host:port)")
-	adbKey := flag.String("adbkey", "", "RSA Private key file for ADB")
+	adbKey := flag.String("adbkey", "", "RSA Private key file for ADB (e.g. ~/.android/adbkey ) ")
+	settingsPath := flag.String("settings", "settings.yaml", "Settings file")
 	flag.Parse()
 
-	b, err := ioutil.ReadFile("settings.yaml")
+	b, err := ioutil.ReadFile(*settingsPath)
 	if err != nil {
 		log.Fatal(err)
 	}
