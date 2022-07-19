@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"io"
@@ -77,7 +80,6 @@ func Install(ctx context.Context, target target.ID, scriptPath string, currentTa
 		}()
 	}
 
-	// time.Sleep(500 * time.Millisecond)
 	var err error
 	var res []byte
 
@@ -90,6 +92,9 @@ func Install(ctx context.Context, target target.ID, scriptPath string, currentTa
 }
 
 func CheckTarget(ctx context.Context, t *target.Info, currentTarget bool) bool {
+	if t.Type != "page" {
+		return false
+	}
 	for _, s := range settings.Scripts {
 		if strings.HasPrefix(t.URL, s.Prefix) {
 			log.Println("install", s.ScriptPath, t.URL)
@@ -161,7 +166,7 @@ func WatchLoop(wsUrl string) error {
 		}
 
 		for _, t := range targets {
-			if !t.Attached {
+			if !t.Attached && t.Type == "page" {
 				err = Watch(ctxt, t.TargetID)
 				break
 			}
@@ -173,7 +178,6 @@ func WatchLoop(wsUrl string) error {
 	}
 }
 
-var dummyKey = []byte("QAAAACGAUUQf/OGDf7YmxHuyrgnf/dkDcHHdteq+kfz7r2y4GmUS9A3GuXcF0VGNKbg25QbAtAF4yLOR0o26LMv7VZf/0gJg9xe44ATio/biy8DT48G6A26DUTjObK95kPK3UBmGpRVQBGitVB/FnjYiBgr28C833y+v7ltI6cizgLbS2+5hQ65FgFK+tsHVvGR7xniM9GhvRSztixhlxtAJ3jyjLtC/4Q7XKtYu5OyuomcyW+zGH133JdspLe2RWgToxM0lOrSu12XhOrs3ySqYVaMufayYedrzi8KQF/sBcPU1+dX20Ko/kJTX4vS75QLRREMTi3I0Sv3kSvV2yZAnuDTDiuPJexVWDVaFW1tN5/p97Ot3+Rh8o2+5JjYwxDd4n7/LoguNMAqboDTphD2qWJiP4Mko7MmAlUN0YkmnoraSV/oNDILF6CWA4cQK1axW9Y1hXsT0bs+3UcXSkdZbS2Fpdc9YuDydMgXSluTWzrT5hRr7js9w5WChRnokcLOMJWylYSPYjEBNSQS1ZbNRhk7J71EZn1gwogDPtkSNEXnTtmxcgLchoFnrhIrkeTbH9CtRb9JGmJni5ZwxSa39Zh3LqBvvaFMfSdnww9/HOr45HEziN+nNwnOPgPeN8Mx7we2pZIyDef5rJkkVTkKYIDR099KCGZmDwxWQaMaGJJaT4kZyRwEAAQA=")
 var chromeDomainSocket = "localabstract:chrome_devtools_remote"
 
 type streamWrapper struct {
@@ -199,6 +203,7 @@ func (*streamWrapper) SetWriteDeadline(time.Time) error {
 func main() {
 	wsUrl := flag.String("ws", "ws://localhost:9222/devtools/browser", "DevTools Socket URL")
 	adb := flag.String("adb", "", "Connect via adb (host:port)")
+	adbKey := flag.String("adbkey", "", "RSA Private key file for ADB")
 	flag.Parse()
 
 	b, err := ioutil.ReadFile("settings.yaml")
@@ -211,12 +216,27 @@ func main() {
 	}
 
 	if *adb != "" {
+		var key *rsa.PrivateKey
+		if *adbKey != "" {
+			pemData, err := ioutil.ReadFile(*adbKey)
+			if err != nil {
+				log.Fatal(err)
+			}
+			log.Println("adb key: ", *adbKey)
+			block, _ := pem.Decode(pemData)
+			parseResult, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+			if err != nil {
+				log.Fatal(err)
+			}
+			key = parseResult.(*rsa.PrivateKey)
+		}
+
 		conn, err := net.Dial("tcp", *adb)
 		if err != nil {
 			log.Fatal(err)
 		}
 		defer conn.Close()
-		adb, err := Connect(conn, dummyKey)
+		adb, err := Connect(conn, key)
 		if err != nil {
 			log.Fatal(err)
 		}

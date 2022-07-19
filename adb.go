@@ -2,10 +2,15 @@
 package main
 
 import (
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"sync"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // https://android.googlesource.com/platform/packages/modules/adb/+/master/protocol.txt
@@ -94,8 +99,8 @@ type Conn struct {
 	locker    sync.RWMutex
 }
 
-func Connect(rw io.ReadWriter, pubKey []byte) (*Conn, error) {
-	sendCh := make(chan *Packet, 0)
+func Connect(rw io.ReadWriter, key *rsa.PrivateKey) (*Conn, error) {
+	sendCh := make(chan *Packet, 16)
 	c := &Conn{streams: map[uint32]*Stream{}, c: rw, sendCh: sendCh}
 	NewPacket(A_CNXN, 0x01000000, 256*1024, []byte("host::\x00")).WriteTo(c.c)
 	p, _ := c.readPacket()
@@ -103,8 +108,21 @@ func Connect(rw io.ReadWriter, pubKey []byte) (*Conn, error) {
 		return nil, fmt.Errorf("TLS connection is not supported.")
 	}
 	if p.Command == A_AUTH {
-		NewPacket(A_AUTH, 3, 0, pubKey).WriteTo(c.c)
+		if key == nil {
+			key, _ = rsa.GenerateKey(rand.Reader, 2048) // generate temporary key.
+		}
+		sign, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA1, p.Data)
+		if err != nil {
+			return nil, err
+		}
+		NewPacket(A_AUTH, 2, 0, sign).WriteTo(c.c)
 		p, _ = c.readPacket()
+		if p.Command == A_AUTH {
+			pkey, _ := ssh.NewPublicKey(&key.PublicKey)
+			pubKey := ssh.MarshalAuthorizedKey(pkey)
+			NewPacket(A_AUTH, 3, 0, pubKey).WriteTo(c.c)
+			p, _ = c.readPacket()
+		}
 	}
 	if p.Command != A_CNXN {
 		return nil, fmt.Errorf("invalid response. %v", p)
