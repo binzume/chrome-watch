@@ -97,11 +97,13 @@ type Conn struct {
 	streamSeq uint32
 	sendCh    chan<- *Packet
 	locker    sync.RWMutex
+	closed    bool
+	done      chan struct{}
 }
 
 func Connect(rw io.ReadWriter, key *rsa.PrivateKey) (*Conn, error) {
 	sendCh := make(chan *Packet, 16)
-	c := &Conn{streams: map[uint32]*Stream{}, c: rw, sendCh: sendCh}
+	c := &Conn{streams: map[uint32]*Stream{}, c: rw, sendCh: sendCh, done: make(chan struct{})}
 	NewPacket(A_CNXN, 0x01000000, 256*1024, []byte("host::\x00")).WriteTo(c.c)
 	p, _ := c.readPacket()
 	if p.Command == A_STLS {
@@ -158,8 +160,12 @@ func Connect(rw io.ReadWriter, key *rsa.PrivateKey) (*Conn, error) {
 }
 
 func (c *Conn) Send(p *Packet) error {
-	c.sendCh <- p
-	return nil
+	select {
+	case <-c.done:
+		return fmt.Errorf("closed")
+	case c.sendCh <- p:
+		return nil
+	}
 }
 
 func (c *Conn) readPacket() (*Packet, error) {
@@ -171,6 +177,10 @@ func (c *Conn) readPacket() (*Packet, error) {
 func (c *Conn) Close() {
 	c.locker.Lock()
 	defer c.locker.Unlock()
+	if !c.closed {
+		close(c.done)
+		c.closed = true
+	}
 	for _, s := range c.streams {
 		close(s.Ch)
 	}
