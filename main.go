@@ -19,6 +19,7 @@ import (
 	"github.com/gobwas/ws"
 
 	"github.com/chromedp/cdproto/inspector"
+	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
@@ -53,20 +54,24 @@ func GetTabs(jsonUrl string) ([]*Tab, error) {
 	return tabs, nil
 }
 
-const SCRIPT_PREFIX = `if (!globalThis._chromewatchScriptExecuted) {globalThis._chromewatchScriptExecuted = true; (async ()=>{`
-const SCRIPT_SUFFIX = `})();}`
+const SCRIPT_PREFIX = `if (!globalThis._chromeWatchScripts?.["%[1]s"]) {(globalThis._chromeWatchScripts??={})["%[1]s"] = true; let f=async (CW=%[2]s)=>{`
+const SCRIPT_SUFFIX = `};document.readyState=='loading'?document.addEventListener('DOMContentLoaded',f,{once:true}):f();}`
 
-func WrapScript(script string) string {
-	return SCRIPT_PREFIX + script + SCRIPT_SUFFIX
+func WrapScript(script, name string, params map[string]interface{}) string {
+	json, err := json.Marshal(params)
+	if err != nil {
+		json = []byte("{}")
+	}
+	return fmt.Sprintf(SCRIPT_PREFIX, name, string(json)) + script + SCRIPT_SUFFIX
 }
 
-func Install(ctx context.Context, target target.ID, script *UserScript, currentTarget bool) error {
-	ctx, cancel := context.WithTimeout(ctx, time.Second*10)
+func Install(ctx context.Context, target *target.Info, script *UserScript, currentTarget bool) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
 	defer cancel()
 
 	if !currentTarget {
 		var cc *chromedp.Context
-		ctx, cancel = chromedp.NewContext(ctx, chromedp.WithTargetID(target), func(c *chromedp.Context) { cc = c })
+		ctx, cancel = chromedp.NewContext(ctx, chromedp.WithTargetID(target.TargetID), func(c *chromedp.Context) { cc = c })
 		defer cancel()
 		defer func() {
 			// FIXME: workaround to avoid the browser tab to be closed.
@@ -76,12 +81,31 @@ func Install(ctx context.Context, target target.ID, script *UserScript, currentT
 		}()
 	}
 
+	var actions []chromedp.Action
+	scriptParams := map[string]interface{}{}
+
 	scriptStr, err := script.Read()
-	if err == nil {
-		err = chromedp.Run(ctx,
-			chromedp.Evaluate(WrapScript(string(scriptStr)), nil),
-		)
+	if err != nil {
+		log.Println("error: ", err)
+		return err
 	}
+
+	if _, ok := script.Grants["cookie"]; ok {
+		chromedp.Run(ctx)
+		actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+			cookies, _ := network.GetCookies().WithUrls([]string{target.URL}).Do(ctx)
+			if len(cookies) > 0 {
+				scriptParams["cookie"] = cookies
+			}
+			return chromedp.Evaluate(WrapScript(string(scriptStr), script.Name, scriptParams), nil).Do(ctx)
+		}))
+
+	}
+	actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+		return chromedp.Evaluate(WrapScript(string(scriptStr), script.Name, scriptParams), nil).Do(ctx)
+	}))
+
+	err = chromedp.Run(ctx, actions...)
 	if err != nil {
 		log.Println("error: ", err)
 	} else {
@@ -91,13 +115,10 @@ func Install(ctx context.Context, target target.ID, script *UserScript, currentT
 }
 
 func CheckTarget(ctx context.Context, t *target.Info, currentTarget bool) bool {
-	if t.Type != "page" {
-		return false
-	}
 	for _, s := range userScripts {
 		if s.Match(t.URL) {
 			log.Println("install", s.Name, t.URL)
-			go Install(ctx, t.TargetID, s, currentTarget)
+			go Install(ctx, t, s, currentTarget)
 			return true
 		}
 	}
@@ -145,35 +166,59 @@ func Watch(parentCtx context.Context, tid target.ID) error {
 	if err != nil {
 		detached.Do(func() { close(done) })
 	}
-	<-done
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 	return err
 }
 
-func WatchLoop(wsUrl string) error {
-	allocatorContext, cancel := chromedp.NewRemoteAllocator(context.Background(), wsUrl)
+func GetTargets(allocatorCtx context.Context) ([]*target.Info, error) {
+	ctx, cancel := chromedp.NewContext(allocatorCtx)
 	defer cancel()
+	return chromedp.Targets(ctx)
+}
 
-	ctxt, cancel := chromedp.NewContext(allocatorContext)
+func WatchLoop(wsUrl, scriptsDir string) error {
+	const recoonectInterval = 10 * time.Second
+	allocatorCtx, cancel := chromedp.NewRemoteAllocator(context.Background(), wsUrl)
 	defer cancel()
 
 	for {
-		targets, err := chromedp.Targets(ctxt)
+		start := time.Now()
+		userScripts = ScanUserScript(scriptsDir)
+
+		targets, err := GetTargets(allocatorCtx)
 		if err != nil {
-			return err
+			log.Println("failed to get targets ", err)
+			time.Sleep(recoonectInterval)
+			continue
+		}
+
+		for _, t := range targets {
+			for _, s := range userScripts {
+				if !t.Attached && s.Match(t.URL) {
+					log.Println("install", s.Name, t.URL)
+					Install(allocatorCtx, t, s, false)
+					break
+				}
+			}
 		}
 
 		for _, t := range targets {
 			if !t.Attached && t.Type == "page" {
 				log.Println("attach", t.TargetID, t.URL)
-				err = Watch(ctxt, t.TargetID)
+				err = Watch(allocatorCtx, t.TargetID)
 				log.Println("detached", err)
 				break
 			}
 		}
-		if err != nil {
-			return err
+
+		w := recoonectInterval - time.Now().Sub(start)
+		if w < 1*time.Second {
+			w = 1 * time.Second
 		}
-		time.Sleep(5 * time.Second)
+		time.Sleep(w)
 	}
 }
 
@@ -203,10 +248,8 @@ func main() {
 	wsUrl := flag.String("ws", "ws://localhost:9222/devtools/browser", "DevTools Socket URL")
 	adb := flag.String("adb", "", "Connect via adb (host:port)")
 	adbKey := flag.String("adbkey", "", "RSA Private key file for ADB (e.g. ~/.android/adbkey ) ")
-	scriptsPath := flag.String("scripts", "./scripts", "User script dir")
+	scriptsDir := flag.String("scripts", "./scripts", "User script dir")
 	flag.Parse()
-
-	userScripts = ScanUserScript(*scriptsPath)
 
 	if *adb != "" {
 		var key *rsa.PrivateKey
@@ -240,7 +283,7 @@ func main() {
 		}
 	}
 
-	err := WatchLoop(*wsUrl)
+	err := WatchLoop(*wsUrl, *scriptsDir)
 	if err != nil {
 		log.Println(err)
 	}
