@@ -240,7 +240,10 @@ func (c *Conn) deleteStrem(id uint32) bool {
 
 func (c *Conn) Open(path string) (*Stream, error) {
 	s := c.newStream()
-	c.Send(NewPacket(A_OPEN, s.local, 0, []byte(path)))
+	if err := c.Send(NewPacket(A_OPEN, s.local, 0, []byte(path))); err != nil {
+		c.deleteStrem(s.local)
+		return nil, err
+	}
 	if _, ok := <-s.Ch; !ok {
 		c.deleteStrem(s.local)
 		return nil, fmt.Errorf("Cannot open %s", path)
