@@ -12,18 +12,23 @@ import (
 
 type UserScript struct {
 	Name       string
-	Matches    []string
+	Includes   []string
+	Excludes   []string
 	Grants     map[string]struct{}
 	ScriptPath string
 }
 
 func (s *UserScript) Match(url string) bool {
-	for _, ptn := range s.Matches {
+	return s.PatternMatch(s.Includes, url) && !s.PatternMatch(s.Excludes, url)
+}
+
+func (s *UserScript) PatternMatch(ptns []string, str string) bool {
+	for _, ptn := range ptns {
 		if strings.HasSuffix(ptn, "*") {
-			if strings.HasPrefix(url, strings.TrimSuffix(ptn, "*")) {
+			if strings.HasPrefix(str, strings.TrimSuffix(ptn, "*")) {
 				return true
 			}
-		} else if url == ptn {
+		} else if str == ptn {
 			return true
 		}
 	}
@@ -58,7 +63,9 @@ func parseScript(file string) (*UserScript, error) {
 			if m[1] == "name" {
 				script.Name = m[2]
 			} else if m[1] == "match" || m[1] == "include" {
-				script.Matches = append(script.Matches, m[2])
+				script.Includes = append(script.Includes, m[2])
+			} else if m[1] == "exclude" {
+				script.Excludes = append(script.Excludes, m[2])
 			} else if m[1] == "grant" {
 				script.Grants[m[2]] = struct{}{}
 			}
