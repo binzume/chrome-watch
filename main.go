@@ -4,10 +4,8 @@ import (
 	"context"
 	"crypto/rsa"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"flag"
-	"fmt"
 	"io/ioutil"
 	"log"
 	"net"
@@ -22,17 +20,7 @@ import (
 
 var userScripts []*UserScript
 
-const SCRIPT_PREFIX = `if (!globalThis._chromeWatchScripts?.["%[1]s"]) {(globalThis._chromeWatchScripts??={})["%[1]s"] = true; let f=async (CW=%[2]s)=>{`
-const SCRIPT_SUFFIX = `};document.readyState=='loading'?document.addEventListener('DOMContentLoaded',f,{once:true}):f();}`
 const recoonectInterval = 10 * time.Second
-
-func WrapScript(script, name string, params map[string]interface{}) string {
-	json, err := json.Marshal(params)
-	if err != nil {
-		json = []byte("{}")
-	}
-	return fmt.Sprintf(SCRIPT_PREFIX, name, string(json)) + script + SCRIPT_SUFFIX
-}
 
 func Install(ctx context.Context, target *target.Info, script *UserScript, currentTarget bool) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
@@ -75,22 +63,17 @@ func Install(ctx context.Context, target *target.Info, script *UserScript, curre
 
 	err = chromedp.Run(ctx, actions...)
 	if err != nil {
-		log.Println("error: ", err)
-	} else {
-		log.Println("ok.")
+		log.Println("error: ", err, target.URL)
 	}
 	return err
 }
 
-func CheckTarget(ctx context.Context, t *target.Info, currentTarget bool) bool {
+func CheckTarget(ctx context.Context, t *target.Info, currentTarget bool) {
 	for _, s := range userScripts {
 		if s.Match(t.URL) {
-			log.Println("install", s.Name, t.URL)
 			go Install(ctx, t, s, currentTarget)
-			return true
 		}
 	}
-	return false
 }
 
 func Watch(parentCtx context.Context) error {
@@ -105,7 +88,7 @@ func Watch(parentCtx context.Context) error {
 				attachedTargets[ev.TargetInfo.TargetID] = true
 			}
 			if !attachedTargets[ev.TargetInfo.TargetID] {
-				CheckTarget(ctx, ev.TargetInfo, false)
+				CheckTarget(parentCtx, ev.TargetInfo, false)
 			}
 			if !ev.TargetInfo.Attached {
 				// Do this after CheckTarget() to ignore detach event.
@@ -123,9 +106,7 @@ func Watch(parentCtx context.Context) error {
 	for _, t := range targets {
 		for _, s := range userScripts {
 			if !t.Attached && s.Match(t.URL) {
-				log.Println("install(init)", s.Name, t.URL)
 				Install(ctx, t, s, false)
-				break
 			}
 		}
 	}
@@ -255,7 +236,7 @@ func main() {
 			if err != nil {
 				log.Fatal(err)
 			}
-			log.Println("ADB: key: ", adbKey)
+			log.Println("ADB: key: ", *adbKey)
 			block, _ := pem.Decode(pemData)
 			parseResult, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 			if err != nil {

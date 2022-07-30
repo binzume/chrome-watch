@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
@@ -85,4 +87,15 @@ func ScanUserScript(dir string) []*UserScript {
 		scripts = append(scripts, script)
 	}
 	return scripts
+}
+
+const SCRIPT_PREFIX = `if (!globalThis._chromeWatchScripts?.["%[1]s"]) {(globalThis._chromeWatchScripts??={})["%[1]s"] = true; let f=async (CW=%[2]s)=>{`
+const SCRIPT_SUFFIX = `};document.readyState=='loading'?document.addEventListener('DOMContentLoaded',f,{once:true}):f();}`
+
+func WrapScript(script, name string, params map[string]interface{}) string {
+	json, err := json.Marshal(params)
+	if err != nil {
+		json = []byte("{}")
+	}
+	return fmt.Sprintf(SCRIPT_PREFIX, name, string(json)) + script + SCRIPT_SUFFIX
 }
