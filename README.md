@@ -1,7 +1,7 @@
 
 # chrome-watch
 
-Chromeiumベースのブラウザを[Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/)で監視して，特定のURLにアクセスしたときにスクリプトを実行します．
+Chromiumベースのブラウザを[Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/)で監視して，特定のURLにアクセスしたときにスクリプトを実行します．
 Android版ChromeやOculus Questのブラウザなど拡張機能をインストールできない環境でユーザースクリプトを実行できます．
 
 - Chrome Extenstionが使えない環境で，色々な操作を自動化できます
@@ -9,6 +9,8 @@ Android版ChromeやOculus Questのブラウザなど拡張機能をインスト�
 - ADBプロトコルに対応しているのでAndroid端末上のChromeに直接接続できます
 
 ## Usage
+
+Go 1.18以降が必要です．
 
 インストール：
 
@@ -18,7 +20,7 @@ go install github.com/binzume/chrome-watch@latest
 
 ### User Script
 
-Greasemonkeyとよく似たフォーマットのスクリプトをscriptsフォルダに置くことで実行できます．scripts 以下にあるものを参照して下さい．
+Greasemonkeyとよく似たフォーマットのスクリプトをscriptsフォルダに置くことで実行できます．scripts 以下にサンプルスクリプトがあります．
 
 例：
 ```js
