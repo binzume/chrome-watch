@@ -135,11 +135,9 @@ func Connect(rw io.ReadWriter, key *rsa.PrivateKey) (*Conn, error) {
 			p, err := c.readPacket()
 			if err != nil {
 				break
-			}
-			// TOOD lock streams
-			if p.Command == A_CLSE {
+			} else if p.Command == A_CLSE {
 				c.deleteStrem(p.Arg1)
-			} else if s, ok := c.streams[p.Arg1]; ok {
+			} else if s := c.getStream(p.Arg1); s != nil {
 				if p.Command == A_WRTE && s.remote != 0 {
 					s.Ch <- p.Data
 					c.Send(NewPacket(A_OKAY, p.Arg1, p.Arg0, nil))
@@ -187,6 +185,10 @@ func (c *Conn) Close() {
 	c.streams = map[uint32]*Stream{}
 }
 
+func (c *Conn) Closed() <-chan struct{} {
+	return c.done
+}
+
 type Stream struct {
 	conn    *Conn
 	local   uint32
@@ -227,6 +229,12 @@ func (c *Conn) newStream() *Stream {
 	return s
 }
 
+func (c *Conn) getStream(id uint32) *Stream {
+	c.locker.RLock()
+	defer c.locker.RUnlock()
+	return c.streams[id]
+}
+
 func (c *Conn) deleteStrem(id uint32) bool {
 	c.locker.Lock()
 	defer c.locker.Unlock()
@@ -244,9 +252,15 @@ func (c *Conn) Open(path string) (*Stream, error) {
 		c.deleteStrem(s.local)
 		return nil, err
 	}
-	if _, ok := <-s.Ch; !ok {
+	select {
+	case <-c.done:
 		c.deleteStrem(s.local)
 		return nil, fmt.Errorf("Cannot open %s", path)
+	case _, ok := <-s.Ch:
+		if !ok {
+			c.deleteStrem(s.local)
+			return nil, fmt.Errorf("Cannot open %s", path)
+		}
 	}
 	return s, nil
 }
