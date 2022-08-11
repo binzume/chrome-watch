@@ -11,6 +11,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/binzume/adbproto"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/target"
@@ -147,7 +148,7 @@ func WatchLoop(ctx context.Context, wsUrl, scriptsDir string) error {
 }
 
 type streamWrapper struct {
-	*Stream
+	*adbproto.Stream
 }
 
 func (*streamWrapper) LocalAddr() net.Addr {
@@ -169,12 +170,12 @@ func (*streamWrapper) SetWriteDeadline(time.Time) error {
 func StartAdbConnection(ctx context.Context, adbTarget string, key *rsa.PrivateKey) {
 	const chromeDomainSocket = "localabstract:chrome_devtools_remote"
 
-	connect := func() (*Conn, error) {
+	connect := func() (*adbproto.Conn, error) {
 		conn, err := net.Dial("tcp", adbTarget)
 		if err != nil {
 			return nil, err
 		}
-		adb, err := Connect(conn, key)
+		adb, err := adbproto.Connect(conn, key)
 		if err != nil {
 			conn.Close()
 			return nil, err
@@ -184,7 +185,7 @@ func StartAdbConnection(ctx context.Context, adbTarget string, key *rsa.PrivateK
 			return &streamWrapper{stream}, err
 		}
 		go func() {
-			<-adb.done
+			<-adb.Closed()
 			conn.Close()
 		}()
 		return adb, nil
@@ -204,7 +205,7 @@ func StartAdbConnection(ctx context.Context, adbTarget string, key *rsa.PrivateK
 				}
 				select {
 				case <-ctx.Done():
-				case <-adb.done:
+				case <-adb.Closed():
 				}
 				log.Print("ADB: disconnected")
 				adb.Close()
