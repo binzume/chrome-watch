@@ -8,8 +8,8 @@
 let styles = {
   Default:  /* css */  '',
   Blue:  /* css */  `:root {
-    --oc-toast-background: #2a2a60;
-    --oc-panel-side-nav-background: #1a1a40;
+    --oc-toast-background: rgba(42,42,96,0.9);
+    --oc-panel-side-nav-background: rgba(26, 26, 64, 0.6);
     --oc-primary-text: #ffffff;
     --oc-secondary-text: #aaaaaa;
     --oc-placeholder-text: #888888;
