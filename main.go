@@ -6,9 +6,10 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"flag"
-	"io/ioutil"
+	"io"
 	"log"
 	"net"
+	"os"
 	"time"
 
 	"github.com/binzume/adbproto"
@@ -50,7 +51,7 @@ func Install(ctx context.Context, target *target.Info, script *UserScript, curre
 	if _, ok := script.Grants["cookie"]; ok {
 		chromedp.Run(ctx)
 		actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
-			cookies, _ := network.GetCookies().WithUrls([]string{target.URL}).Do(ctx)
+			cookies, _ := network.GetCookies().WithURLs([]string{target.URL}).Do(ctx)
 			if len(cookies) > 0 {
 				scriptParams["cookie"] = cookies
 			}
@@ -128,7 +129,10 @@ func GetTargets(allocatorCtx context.Context) ([]*target.Info, error) {
 }
 
 func WatchLoop(ctx context.Context, wsUrl, scriptsDir string) error {
-	allocatorCtx, cancel := chromedp.NewRemoteAllocator(ctx, wsUrl)
+	allocatorCtx, cancel := chromedp.NewRemoteAllocator(ctx, wsUrl, func(a *chromedp.RemoteAllocator) {
+		chromedp.NoModifyURL(a)
+	})
+
 	defer cancel()
 
 	for {
@@ -149,6 +153,8 @@ func WatchLoop(ctx context.Context, wsUrl, scriptsDir string) error {
 
 type streamWrapper struct {
 	*adbproto.Stream
+	adb  *adbproto.Conn
+	conn io.Closer
 }
 
 func (*streamWrapper) LocalAddr() net.Addr {
@@ -166,11 +172,17 @@ func (*streamWrapper) SetReadDeadline(time.Time) error {
 func (*streamWrapper) SetWriteDeadline(time.Time) error {
 	return nil
 }
+func (s *streamWrapper) Close() error {
+	err := s.Stream.Close()
+	s.adb.Close()
+	s.conn.Close()
+	return err
+}
 
 func StartAdbConnection(ctx context.Context, adbTarget string, key *rsa.PrivateKey) {
 	const chromeDomainSocket = "localabstract:chrome_devtools_remote"
 
-	connect := func() (*adbproto.Conn, error) {
+	ws.DefaultDialer.NetDial = func(_ context.Context, _, _ string) (net.Conn, error) {
 		conn, err := net.Dial("tcp", adbTarget)
 		if err != nil {
 			return nil, err
@@ -180,45 +192,11 @@ func StartAdbConnection(ctx context.Context, adbTarget string, key *rsa.PrivateK
 			conn.Close()
 			return nil, err
 		}
-		ws.DefaultDialer.NetDial = func(_ context.Context, _, _ string) (net.Conn, error) {
-			stream, err := adb.Open(chromeDomainSocket)
-			return &streamWrapper{stream}, err
-		}
-		go func() {
-			<-adb.Closed()
-			conn.Close()
-		}()
-		return adb, nil
+
+		stream, err := adb.Open(chromeDomainSocket)
+
+		return &streamWrapper{Stream: stream, adb: adb, conn: conn}, err
 	}
-
-	connected := make(chan struct{})
-	go func(connected chan<- struct{}) {
-		for {
-			adb, err := connect()
-			if err != nil {
-				log.Println("ADB: failed to connect.", err)
-			} else {
-				log.Println("ADB: connected.")
-				if connected != nil {
-					close(connected)
-					connected = nil
-				}
-				select {
-				case <-ctx.Done():
-				case <-adb.Closed():
-				}
-				log.Print("ADB: disconnected")
-				adb.Close()
-			}
-
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(recoonectInterval):
-			}
-		}
-	}(connected)
-	<-connected
 }
 
 func main() {
@@ -233,7 +211,7 @@ func main() {
 	if *adb != "" {
 		var key *rsa.PrivateKey
 		if *adbKey != "" {
-			pemData, err := ioutil.ReadFile(*adbKey)
+			pemData, err := os.ReadFile(*adbKey)
 			if err != nil {
 				log.Fatal(err)
 			}
